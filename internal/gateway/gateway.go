@@ -6949,6 +6949,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if proto == provider.Anthropic {
 		toolIDs = &toolUseIDs{seen: toolSeen, sse: sse}
 	}
+	// what the ChatGPT backend tells Codex of the account, in events only
+	// Codex has a name for (codex_lead.go); any other client gets the reply
+	// without them
+	var leadTidy *codexLeadTidy
+	if proto == provider.Responses && sse && !fromCodex(r.Header) && agentOf(r) != "codex" {
+		leadTidy = &codexLeadTidy{}
+	}
 	// out is what a filter let through, through ids, phases, toolIDs and
 	// thinkSigs
 	out := func(b []byte) []byte {
@@ -7116,6 +7123,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if thinkSigs != nil {
 				out = thinkSigs.write(out)
 			}
+			if leadTidy != nil {
+				out = leadTidy.write(out)
+			}
 			if _, werr := write(out); werr != nil {
 				return res.StatusCode, "", true
 			}
@@ -7231,6 +7241,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	}
 	if thinkSigs != nil {
 		write(thinkSigs.flush())
+	}
+	if leadTidy != nil {
+		write(leadTidy.flush())
 	}
 	if sse {
 		sniff.drain()
