@@ -18,12 +18,14 @@ import (
 // backendLeads is a turn as the ChatGPT backend answers it: it says what it
 // knows of the account first, in the two events only Codex has a name for
 // (codex.rate_limits with its windows, codex.response.metadata with the
-// model list's tag), then the reply itself.
+// model list's tag), then the reply, with response.metadata (the moderation
+// word) between its deltas.
 var backendLeads = sse(
 	`event: codex.rate_limits`+"\n"+`data: {"type":"codex.rate_limits","plan_type":"plus","rate_limits":{"allowed":true,"limit_reached":false,"primary":{"used_percent":3,"window_minutes":300,"reset_after_seconds":100}}}`,
 	`event: codex.response.metadata`+"\n"+`data: {"type":"codex.response.metadata","headers":{"x-models-etag":"W\"9e0\""}}`,
 	`event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"r1","model":"gpt-5.5"}}`,
 	`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","delta":"a cat"}`,
+	`event: response.metadata`+"\n"+`data: {"type":"response.metadata","sequence_number":5,"response_id":"r1","metadata":{"openai_chatgpt_moderation_metadata":{"generation":{},"tool_call":{},"tool_response":{}}}}`,
 	`event: response.completed`+"\n"+`data: {"type":"response.completed","response":{"id":"r1","status":"completed","usage":{"input_tokens":9,"output_tokens":2}}}`)
 
 // leadSignIn puts one ChatGPT sign-in in a temp home and points the
@@ -89,8 +91,8 @@ func TestCodexLeadEventsStayWithCodex(t *testing.T) {
 		if code != 200 || !strings.Contains(got, `"delta":"a cat"`) || !strings.Contains(got, "response.completed") {
 			t.Fatalf("%s: %d %s", who.says, code, got)
 		}
-		for _, ev := range []string{"codex.rate_limits", "codex.response.metadata"} {
-			if has := strings.Contains(got, ev); has != who.want {
+		for _, ev := range []string{"codex.rate_limits", "codex.response.metadata", "response.metadata"} {
+			if has := strings.Contains(got, "event: "+ev+"\n"); has != who.want {
 				t.Errorf("%s: event %s there=%v, want %v: %s", who.says, ev, has, who.want, got)
 			}
 		}
