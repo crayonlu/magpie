@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -230,6 +232,23 @@ func TestPassthroughResponsesEndsShort(t *testing.T) {
 	code, body := post(t, "/v1/responses", `{"model":"fake/m1","stream":true,"input":"hi"}`)
 	if code != 200 || !strings.Contains(body, `"type":"response.failed"`) || !strings.Contains(body, "Fake:") {
 		t.Fatalf("a Responses stream cut short did not fail: %d %s", code, body)
+	}
+	// The failed turn's response is a whole Response: a typed client reads
+	// these as required, and without them the turn dies on the JSON before
+	// the failure is seen ("missing field `created_at`").
+	failed := ""
+	for _, line := range strings.Split(body, "\n") {
+		if d, ok := strings.CutPrefix(line, "data: "); ok && gjson.Get(d, "type").String() == "response.failed" {
+			failed = d
+		}
+	}
+	if failed == "" {
+		t.Fatalf("no response.failed data line: %s", body)
+	}
+	for _, field := range []string{"response.id", "response.object", "response.created_at", "response.status", "response.model", "response.output", "response.error"} {
+		if !gjson.Get(failed, field).Exists() {
+			t.Errorf("response.failed lacks %s: %s", field, failed)
+		}
 	}
 }
 

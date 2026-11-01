@@ -7046,7 +7046,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// event the upstream left is dropped (#2580): a client
 			// reading it dies on its JSON before the error is reached
 			dropHalf()
-			w.Write(append(apart(), streamFailure(proto, failed)...))
+			w.Write(append(apart(), streamFailure(proto, failed, model)...))
 			if proto == provider.Chat && rerr != nil && rerr != io.EOF {
 				// a Chat stream the upstream severed ends on [DONE] too: a
 				// client that reads to it stops there and says the error it
@@ -7132,7 +7132,13 @@ func noteSaidStatus(w http.ResponseWriter, status int) {
 
 // streamFailure is an error event ending a stream in proto, as each
 // protocol's own server sends one mid-reply.
-func streamFailure(proto provider.Protocol, msg string) []byte {
+//
+// The Responses one is a whole Response, not just an error: a typed client
+// reads response.failed's response into its Response struct, where id,
+// object, created_at, model, output and status are required, and a bare
+// {object, status, error} failed the turn with "missing field `created_at`"
+// instead of showing the failure.
+func streamFailure(proto provider.Protocol, msg, model string) []byte {
 	var name string
 	var v map[string]any
 	switch proto {
@@ -7140,7 +7146,10 @@ func streamFailure(proto provider.Protocol, msg string) []byte {
 		v = map[string]any{"error": map[string]any{"message": msg, "type": "api_error"}}
 	case provider.Responses:
 		name = "response.failed"
-		v = map[string]any{"type": name, "response": map[string]any{"object": "response", "status": "failed",
+		v = map[string]any{"type": name, "response": map[string]any{
+			"id": "resp_" + newID(), "object": "response", "created_at": time.Now().Unix(),
+			"status": "failed", "model": model, "output": []any{},
+			"parallel_tool_calls": true, "tool_choice": "auto", "tools": []any{},
 			"error": map[string]any{"code": "server_error", "message": msg}}}
 	case provider.Gemini:
 		// Gemini's own mid-stream error, as geminiEncoder writes it: a
