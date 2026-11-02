@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -226,8 +227,8 @@ func TestPassthroughStreamWhole(t *testing.T) {
 // A Responses stream cut short fails as Codex reads a failed turn.
 func TestPassthroughResponsesEndsShort(t *testing.T) {
 	fresh(t)
-	f := &fake{reply: sse(`event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"r1","model":"m1"}}`,
-		`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","delta":"hel"}`)}
+	f := &fake{reply: sse(`event: response.created`+"\n"+`data: {"type":"response.created","sequence_number":0,"response":{"id":"r1","model":"m1"}}`,
+		`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","sequence_number":4,"delta":"hel"}`)}
 	setup(t, "responses", f)
 	code, body := post(t, "/v1/responses", `{"model":"fake/m1","stream":true,"input":"hi"}`)
 	if code != 200 || !strings.Contains(body, `"type":"response.failed"`) || !strings.Contains(body, "Fake:") {
@@ -245,9 +246,35 @@ func TestPassthroughResponsesEndsShort(t *testing.T) {
 	if failed == "" {
 		t.Fatalf("no response.failed data line: %s", body)
 	}
-	for _, field := range []string{"response.id", "response.object", "response.created_at", "response.status", "response.model", "response.output", "response.error"} {
+	for _, field := range []string{"sequence_number", "response.id", "response.object", "response.created_at", "response.status", "response.model", "response.output", "response.error"} {
 		if !gjson.Get(failed, field).Exists() {
 			t.Errorf("response.failed lacks %s: %s", field, failed)
+		}
+	}
+	// the event continues the stream's numbering: 4 went out last, so this is 5
+	if got := gjson.Get(failed, "sequence_number").Int(); got != 5 {
+		t.Errorf("response.failed sequence_number = %d, want 5: %s", got, failed)
+	}
+}
+
+// The socket route synthesizes the reply headers' events for Codex alone: a
+// typed client on the socket reads codex.response.metadata or codex.rate_limits
+// as an unknown variant, as on the HTTP route.
+func TestSocketHeaderFramesOnlyForCodex(t *testing.T) {
+	h := http.Header{}
+	h.Set("X-Models-Etag", `W/"9e0"`)
+	h.Set("x-codex-primary-used-percent", "3")
+	h.Set("x-codex-primary-window-minutes", "300")
+	h.Set("openai-model", "gpt-5.5")
+	w := &socketTurnWriter{h: h}
+	if got := w.headerFrames(); len(got) != 0 {
+		t.Fatalf("a client that isn't Codex was sent the backend's frames: %q", got)
+	}
+	w.codex = true
+	got := string(bytes.Join(w.headerFrames(), nil))
+	for _, want := range []string{"response.metadata", "codex.response.metadata", "codex.rate_limits"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Codex's own request lost %s: %s", want, got)
 		}
 	}
 }

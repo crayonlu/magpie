@@ -6695,6 +6695,12 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if proto == provider.Responses && sse && !fromCodex(r.Header) && agentOf(r) != "codex" {
 		enumTidy = &responsesEnumTidy{}
 	}
+	// the stream's last sequence_number, so the failure magpie adds when it
+	// ends short continues the numbering (responses_seq.go)
+	var respSeq *sequenceWatch
+	if proto == provider.Responses && sse {
+		respSeq = &sequenceWatch{last: -1}
+	}
 	// out is what a filter let through, through ids, phases, toolIDs and
 	// thinkSigs
 	out := func(b []byte) []byte {
@@ -6865,6 +6871,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			if enumTidy != nil {
 				out = enumTidy.write(out)
 			}
+			if respSeq != nil {
+				out = respSeq.write(out)
+			}
 			if _, werr := write(out); werr != nil {
 				return res.StatusCode, "", true
 			}
@@ -6984,6 +6993,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	if enumTidy != nil {
 		write(enumTidy.flush())
 	}
+	if respSeq != nil {
+		write(respSeq.flush())
+	}
 	if sse {
 		sniff.drain()
 	} else {
@@ -7046,7 +7058,11 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// event the upstream left is dropped (#2580): a client
 			// reading it dies on its JSON before the error is reached
 			dropHalf()
-			w.Write(append(apart(), streamFailure(proto, failed, model)...))
+			seq := 0
+			if respSeq != nil {
+				seq = respSeq.next()
+			}
+			w.Write(append(apart(), streamFailure(proto, failed, model, seq)...))
 			if proto == provider.Chat && rerr != nil && rerr != io.EOF {
 				// a Chat stream the upstream severed ends on [DONE] too: a
 				// client that reads to it stops there and says the error it
@@ -7071,7 +7087,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// in it, and no ask again for the budget to burn twice (#2972)
 			msg := cutVoidFailed(p.Name)
 			dropHalf()
-			w.Write(append(apart(), streamFailure(provider.Chat, msg)...))
+			w.Write(append(apart(), streamFailure(provider.Chat, msg, model, 0)...))
 			w.Write([]byte("data: [DONE]\n\n"))
 			if f != nil {
 				f.Flush()
@@ -7138,7 +7154,7 @@ func noteSaidStatus(w http.ResponseWriter, status int) {
 // object, created_at, model, output and status are required, and a bare
 // {object, status, error} failed the turn with "missing field `created_at`"
 // instead of showing the failure.
-func streamFailure(proto provider.Protocol, msg, model string) []byte {
+func streamFailure(proto provider.Protocol, msg, model string, seq int) []byte {
 	var name string
 	var v map[string]any
 	switch proto {
@@ -7146,7 +7162,7 @@ func streamFailure(proto provider.Protocol, msg, model string) []byte {
 		v = map[string]any{"error": map[string]any{"message": msg, "type": "api_error"}}
 	case provider.Responses:
 		name = "response.failed"
-		v = map[string]any{"type": name, "response": map[string]any{
+		v = map[string]any{"type": name, "sequence_number": seq, "response": map[string]any{
 			"id": "resp_" + newID(), "object": "response", "created_at": time.Now().Unix(),
 			"status": "failed", "model": model, "output": []any{},
 			"parallel_tool_calls": true, "tool_choice": "auto", "tools": []any{},
